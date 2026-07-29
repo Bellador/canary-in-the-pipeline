@@ -1,0 +1,94 @@
+name: Canarytoken Effectiveness Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      memo_extra:
+        description: 'Optional extra memo text for this test run'
+        required: false
+        default: 'manual-effectiveness-check'
+
+jobs:
+  verify-canary-injection:
+    runs-on: ubuntu-latest
+    steps:
+
+      # ── 0. Record start time before the composite action runs ──────────────
+      - name: Start timer
+        run: echo "CANARY_START_NS=$(date +%s%N)" >> "$GITHUB_ENV"
+
+      # ── 1. Inject the canarytoken (env vars + on-disk creds file) ──────────
+      - name: Inject canarytoken
+        id: canary
+        # CHANGE HERE BELOW!
+        uses: <WHERE YOU MAINTAIN YOUR ACTION>/securitytoken_inject@main
+        with:
+          auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}
+          memo_extra: ${{ inputs.memo_extra }}
+          write_to_disk: 'true'
+          fail_on_error: 'true'
+
+      # ── 1a. Calculate and report elapsed time immediately after ─────────────
+      - name: Stop timer and report
+        run: |
+          END_NS=$(date +%s%N)
+          ELAPSED_MS=$(( (END_NS - CANARY_START_NS) / 1000000 ))
+          ELAPSED_S=$(echo "scale=3; $ELAPSED_MS / 1000" | bc)
+
+          echo "Composite action wall-clock time: ${ELAPSED_S}s (${ELAPSED_MS}ms)"
+          echo "CANARY_ELAPSED_MS=${ELAPSED_MS}" >> "$GITHUB_ENV"
+          echo "CANARY_ELAPSED_S=${ELAPSED_S}"   >> "$GITHUB_ENV"
+
+      # ── 2. Confirm the action's own outputs came through ────────────────────
+      - name: Show action outputs
+        run: |
+          echo "canarytoken_id output: ${{ steps.canary.outputs.canarytoken_id }}"
+          echo "aws_access_key_id output (masked): ${{ steps.canary.outputs.aws_access_key_id }}"
+
+      # ── 3. Dump every environment variable available to the worker ─────────
+      - name: Dump full process environment
+        run: |
+          echo "── Full environment (sorted) ──"
+          env | sort
+
+          echo
+          echo "── Specifically checking for the injected AWS vars ──"
+          echo "AWS_ACCESS_KEY_ID is set:     $( [ -n "$AWS_ACCESS_KEY_ID" ] && echo yes || echo no )"
+          echo "AWS_SECRET_ACCESS_KEY is set: $( [ -n "$AWS_SECRET_ACCESS_KEY" ] && echo yes || echo no )"
+          echo "AWS_DEFAULT_REGION:           ${AWS_DEFAULT_REGION:-<unset>}"
+
+      # ── 4. Confirm the credentials file exists on disk with expected content ─
+      - name: Inspect on-disk credentials file
+        run: |
+          CREDS_PATH="/home/runner/.aws/credentials"
+
+          echo "── File existence & permissions ──"
+          if [ -f "$CREDS_PATH" ]; then
+            ls -la "$CREDS_PATH"
+            stat "$CREDS_PATH"
+          else
+            echo "::error::Credentials file not found at $CREDS_PATH"
+            exit 1
+          fi
+
+          echo
+          echo "── File contents ──"
+          cat "$CREDS_PATH"
+
+          echo
+          echo "── AWS CLI can resolve the profile? ──"
+          aws configure list --profile snowcrash || true
+
+      # ── 5. Summary in the GitHub Actions UI ─────────────────────────────────
+      - name: Write job summary
+        run: |
+          {
+            echo "## Canarytoken Effectiveness Check"
+            echo ""
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| Env vars injected | $( [ -n "$AWS_ACCESS_KEY_ID" ] && echo '✅ yes' || echo '❌ no' ) |"
+            echo "| Creds file written | $( [ -f /home/runner/.aws/credentials ] && echo '✅ yes' || echo '❌ no' ) |"
+            echo "| Canarytoken ID | ${{ steps.canary.outputs.canarytoken_id }} |"
+            echo "| **Action duration** | **${CANARY_ELAPSED_S}s (${CANARY_ELAPSED_MS}ms)** |"
+          } >> "$GITHUB_STEP_SUMMARY"

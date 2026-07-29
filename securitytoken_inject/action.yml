@@ -1,0 +1,152 @@
+name: 'Inject canarytoken'
+description: 'Injects an AWS canarytoken into the runner''s process environment (via $GITHUB_ENV) and writes them to disk at ~/.aws/credentials. Any credential-harvesting tool that validates these tokens will trigger an alert'
+author: 'Bellador'
+
+inputs:
+  auth_token:
+    description: 'API authentication token - organizational GitHub secret which will be supplied as parameter by the workflow calling this composite action'
+    required: true
+
+  canary_domain:
+    description: 'Canarytoken console domain'
+    required: true
+    default: '<ENTER DEFAULT DOMAIN>' # CHANGE HERE!
+
+  expiry:
+    description: 'Token lifetime accepted by the API. The more workflows and their run cadence, the lower should be the expiry to not surpass the creation threshold'
+    required: false
+    default: '14d'
+
+  memo_extra:
+    description: 'Optional free-text appended to the auto-generated memo so one can add environment, team, or service identifiers'
+    required: false
+    default: ''
+
+  write_to_disk:
+    description: 'Write the canary credentials to an AWS credentials file on disk. Exposes the canarytoken to file-system scrapers in addition to env-var harvesters'
+    required: false
+    default: 'true'
+
+  credentials_path:
+    description: 'Absolute path of the AWS credentials file to write. Defaults to the standard CLI location so common scrapers find it'
+    required: false
+    default: '/home/runner/.aws/credentials'
+
+  aws_profile:
+    description: 'AWS credentials profile name written to the file. Should not be the default to not interfere with any existing AWS creds'
+    required: false
+    default: 'snowcrash'
+
+  fail_on_error:
+    description: 'Fail the workflow step if the canarytokens API call is unsuccessful. Set to false to treat canary injection as best-effort'
+    required: false
+    default: 'false'
+
+outputs:
+  aws_access_key_id:
+    description: 'The canary AWS Access Key ID that was injected.'
+    value: ${{ steps.create-token.outputs.aws_access_key_id }}
+
+  canarytoken_id:
+    description: 'The canarytokens token ID (useful for audit logs).'
+    value: ${{ steps.create-token.outputs.canarytoken_id }}
+
+runs:
+  using: composite
+  steps:
+
+    # ── 1. Create the canarytoken via the API ─────────────────────────────────
+    - name: Create AWS canarytoken
+      id: create-token
+      shell: bash
+      env:
+        AUTH_TOKEN:   ${{ inputs.auth_token }}
+        CANARY_DOMAIN: ${{ inputs.canary_domain }}
+        EXPIRY:       ${{ inputs.expiry }}
+        MEMO_EXTRA:   ${{ inputs.memo_extra }}
+        FAIL_ON_ERROR: ${{ inputs.fail_on_error }}
+      run: |
+        # ── Build memo to uniquely attribute token ─────────────────────────────────────
+        MEMO="run=${{ github.run_id }},run_attempt=${{ github.run_attempt }}"
+        MEMO="${MEMO},actor=${{ github.actor }},actorid=${{ github.actor_id }}"
+        MEMO="${MEMO},repo=${{ github.repository }},ref=${{ github.ref_name }}"
+        MEMO="${MEMO},sha=${{ github.sha }}"
+        [ -n "$MEMO_EXTRA" ] && MEMO="${MEMO},${MEMO_EXTRA}"
+
+        echo "::debug::Memo: $MEMO"
+
+        # ── Call API ────────────────────────────────────────────────────────────
+        RESPONSE=$(curl -sf \
+          --max-time 15 \
+          --retry 3 \
+          --retry-delay 2 \
+          "https://${CANARY_DOMAIN}/api/v1/canarytoken/create" \
+          -d auth_token="${AUTH_TOKEN}" \
+          -d memo="${MEMO}" \
+          -d expiry="${EXPIRY}" \
+          -d kind=aws-id 2>&1) || {
+            echo "::warning::Canarytokens API request failed: $RESPONSE"
+            [ "$FAIL_ON_ERROR" = "true" ] && exit 1 || exit 0
+          }
+
+        # ── Validate response ───────────────────────────────────────────────────
+        if ! echo "$RESPONSE" | jq -e '.canarytoken.renders."aws-id"' > /dev/null 2>&1; then
+          echo "::warning::Unexpected API response: $(echo "$RESPONSE" | head -c 500)"
+          [ "$FAIL_ON_ERROR" = "true" ] && exit 1 || exit 0
+        fi
+
+        # ── Parse credentials ───────────────────────────────────────────────────
+        RENDERS=$(echo "$RESPONSE" | jq -r '.canarytoken.renders."aws-id"')
+        TOKEN_ID=$(echo "$RESPONSE" | jq -r '.canarytoken.canarytoken')
+
+        AWS_KEY_ID=$(printf '%s' "$RENDERS" \
+          | grep -oE 'aws_access_key_id = .{20}' \
+          | awk '{print $3}')
+
+        AWS_SECRET=$(printf '%s' "$RENDERS" \
+          | grep -oE 'aws_secret_access_key = .{40}' \
+          | awk '{print $3}')
+
+        if [ -z "$AWS_KEY_ID" ] || [ -z "$AWS_SECRET" ]; then
+          echo "::warning::Could not parse credentials from API response."
+          [ "$FAIL_ON_ERROR" = "true" ] && exit 1 || exit 0
+        fi
+
+        # ── Inject into process environment (all subsequent steps see these) ────
+        echo "AWS_ACCESS_KEY_ID=${AWS_KEY_ID}"         >> "$GITHUB_ENV"
+        echo "AWS_SECRET_ACCESS_KEY=${AWS_SECRET}"     >> "$GITHUB_ENV"
+        echo "AWS_DEFAULT_REGION=eu-central-2"         >> "$GITHUB_ENV"
+
+        # ── Expose outputs (masked in logs) ─────────────────────────────────────
+        echo "::add-mask::${AWS_KEY_ID}"
+        echo "::add-mask::${AWS_SECRET}"
+        echo "aws_access_key_id=${AWS_KEY_ID}"  >> "$GITHUB_OUTPUT"
+        echo "canarytoken_id=${TOKEN_ID}"       >> "$GITHUB_OUTPUT"
+
+        echo "::notice::security token ${TOKEN_ID} injected into environment ✓"
+
+    # ── 2. Write credentials to disk ───────────────────────────────
+    - name: Write canary credentials to disk
+      if: inputs.write_to_disk == 'true'
+      shell: bash
+      env:
+        CREDS_PATH:  ${{ inputs.credentials_path }}
+        AWS_PROFILE: ${{ inputs.aws_profile }}
+      run: |
+        CREDS_DIR="$(dirname "$CREDS_PATH")"
+        mkdir -p "$CREDS_DIR"
+
+        # Write a standards-compliant credentials file so both the AWS CLI
+        # and common credential-harvesting tools recognise the format
+        cat > "$CREDS_PATH" <<-EOF
+        [${AWS_PROFILE}]
+        aws_access_key_id     = ${AWS_ACCESS_KEY_ID}
+        aws_secret_access_key = ${AWS_SECRET_ACCESS_KEY}
+        region                = eu-central-2
+        EOF
+
+        # Harden permissions to mimics what `aws configure` would produce
+        chmod 600 "$CREDS_PATH"
+        chown "$(id -u):$(id -g)" "$CREDS_PATH"
+
+        echo "::notice::Canary credentials written to ${CREDS_PATH} (profile: ${AWS_PROFILE}) ✓"

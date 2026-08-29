@@ -1,6 +1,6 @@
-name: 'Inject canarytoken'
-description: 'Injects an AWS canarytoken into the runner''s process environment (via $GITHUB_ENV) and writes them to disk at ~/.aws/credentials. Any credential-harvesting tool that validates these tokens will trigger an alert'
-author: 'Bellador'
+name: 'Securitytoken inject'
+description: 'Injects an AWS decoy credentials into the runner''s process environment (via $GITHUB_ENV) and writes them to disk at ~/.aws/credentials. Any credential-harvesting tool that validates these tokens will trigger a SOC alert'
+author: 'https://github.com/Bellador'
 
 inputs:
   auth_token:
@@ -8,12 +8,12 @@ inputs:
     required: true
 
   canary_domain:
-    description: 'Canarytoken console domain'
-    required: true
-    default: '<ENTER DEFAULT DOMAIN>' # CHANGE HERE!
+    description: 'Securitytoken console domain'
+    required: false
+    default: '<ENTER CLOUD CONSOLE DOMAIN>' # CHANGE HERE! e.g. d3adb33f.canary.tools
 
   expiry:
-    description: 'Token lifetime accepted by the API. The more workflows and their run cadence, the lower should be the expiry to not surpass the creation threshold'
+    description: 'Token lifetime accepted by the API. The higher the run cadence of a workflow, the lower should be the expiry to not surpass the creation threshold. Rule of thumb to set the expiry value based on workflow runs; multiple-times per day: 1day; multiple-times per week: 7days; multiple-times per month: 14day (default)'
     required: false
     default: '14d'
 
@@ -23,54 +23,78 @@ inputs:
     default: ''
 
   write_to_disk:
-    description: 'Write the canary credentials to an AWS credentials file on disk. Exposes the canarytoken to file-system scrapers in addition to env-var harvesters'
+    description: 'Write the securitytoken to an AWS decoy credentials file on disk. Exposes the securitytoken to file-system scrapers in addition to memory carvers'
     required: false
     default: 'true'
 
-  credentials_path:
-    description: 'Absolute path of the AWS credentials file to write. Defaults to the standard CLI location so common scrapers find it'
-    required: false
-    default: '/home/runner/.aws/credentials'
-
   aws_profile:
-    description: 'AWS credentials profile name written to the file. Should not be the default to not interfere with any existing AWS creds'
+    description: 'AWS decoy credentials profile name written to the file. Should not be the AWS default to not interfere with any existing AWS creds'
     required: false
     default: 'snowcrash'
 
-  fail_on_error:
-    description: 'Fail the workflow step if the canarytokens API call is unsuccessful. Set to false to treat canary injection as best-effort'
-    required: false
-    default: 'false'
-
 outputs:
   aws_access_key_id:
-    description: 'The canary AWS Access Key ID that was injected.'
+    description: 'The decoy AWS Access Key ID that was injected.'
     value: ${{ steps.create-token.outputs.aws_access_key_id }}
 
   canarytoken_id:
-    description: 'The canarytokens token ID (useful for audit logs).'
+    description: 'The securitytoken ID (useful for audit logs).'
     value: ${{ steps.create-token.outputs.canarytoken_id }}
+
+  injection_status:
+    description: 'success or failed - indicates whether the securitytoken was successfully created and injected.'
+    value: ${{ steps.create-token.outputs.injection_status }}
+
+  disk_write_status:
+    description: 'success or failed - indicates whether the securitytoken was successfully written to disk. Empty if write_to_disk was false or injection itself failed.'
+    value: ${{ steps.disk-write.outputs.disk_write_status }}
 
 runs:
   using: composite
   steps:
 
-    # ── 1. Create the canarytoken via the API ─────────────────────────────────
-    - name: Create AWS canarytoken
+    # ── 1. Create the securitytoken via the API ─────────────────────────────────
+    - name: Securitytoken create
       id: create-token
       shell: bash
       env:
-        AUTH_TOKEN:   ${{ inputs.auth_token }}
+        AUTH_TOKEN: ${{ inputs.auth_token }}
         CANARY_DOMAIN: ${{ inputs.canary_domain }}
-        EXPIRY:       ${{ inputs.expiry }}
-        MEMO_EXTRA:   ${{ inputs.memo_extra }}
-        FAIL_ON_ERROR: ${{ inputs.fail_on_error }}
+        EXPIRY: ${{ inputs.expiry }}
+        MEMO_EXTRA: ${{ inputs.memo_extra }}
+        GH_RUN_ID: ${{ github.run_id }}
+        GH_RUN_ATTEMPT: ${{ github.run_attempt }}
+        GH_ACTOR: ${{ github.actor }}
+        GH_ACTOR_ID: ${{ github.actor_id }}
+        GH_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        GH_REPOSITORY: ${{ github.repository }}
+        GH_REF_NAME: ${{ github.ref_name }}
+        GH_SHA: ${{ github.sha }}
+        GH_WORKFLOW: ${{ github.workflow }}
+        GH_WORKFLOW_REF: ${{ github.workflow_ref }}
+        GH_JOB: ${{ github.job }}
+        GH_RUN_NUMBER: ${{ github.run_number }}
+        GH_EVENT_NAME: ${{ github.event_name }}
+        GH_RUNNER_OS: ${{ runner.os }}
+        GH_RUNNER_NAME: ${{ runner.name }}
+        GH_SERVER_URL: ${{ github.server_url }}
+
       run: |
-        # ── Build memo to uniquely attribute token ─────────────────────────────────────
-        MEMO="run=${{ github.run_id }},run_attempt=${{ github.run_attempt }}"
-        MEMO="${MEMO},actor=${{ github.actor }},actorid=${{ github.actor_id }}"
-        MEMO="${MEMO},repo=${{ github.repository }},ref=${{ github.ref_name }}"
-        MEMO="${MEMO},sha=${{ github.sha }}"
+        set -uo pipefail
+
+        echo "injection_status=success" >> "$GITHUB_OUTPUT"
+
+        # ── Build memo to uniquely attribute token ───────────────────────────
+        MEMO="run=${GH_RUN_ID},run_attempt=${GH_RUN_ATTEMPT}"
+        MEMO="${MEMO},actor=${GH_ACTOR},actorid=${GH_ACTOR_ID}"
+        MEMO="${MEMO},triggering_actor=${GH_TRIGGERING_ACTOR}"
+        MEMO="${MEMO},repo=${GH_REPOSITORY},ref=${GH_REF_NAME}"
+        MEMO="${MEMO},sha=${GH_SHA}"
+        MEMO="${MEMO},workflow=${GH_WORKFLOW},workflow_ref=${GH_WORKFLOW_REF}"
+        MEMO="${MEMO},job=${GH_JOB},run_number=${GH_RUN_NUMBER}"
+        MEMO="${MEMO},event=${GH_EVENT_NAME}"
+        MEMO="${MEMO},runner_os=${GH_RUNNER_OS},runner_name=${GH_RUNNER_NAME}"
+        MEMO="${MEMO},run_url=${GH_SERVER_URL}/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}/attempts/${GH_RUN_ATTEMPT}"
         [ -n "$MEMO_EXTRA" ] && MEMO="${MEMO},${MEMO_EXTRA}"
 
         echo "::debug::Memo: $MEMO"
@@ -84,15 +108,17 @@ runs:
           -d auth_token="${AUTH_TOKEN}" \
           -d memo="${MEMO}" \
           -d expiry="${EXPIRY}" \
-          -d kind=aws-id 2>&1) || {
-            echo "::warning::Canarytokens API request failed: $RESPONSE"
-            [ "$FAIL_ON_ERROR" = "true" ] && exit 1 || exit 0
+          -d kind=aws-id) || {
+            echo "::warning::Securitytoken API request failed"
+            echo "injection_status=failed" >> "$GITHUB_OUTPUT"
+            exit 0
           }
 
         # ── Validate response ───────────────────────────────────────────────────
         if ! echo "$RESPONSE" | jq -e '.canarytoken.renders."aws-id"' > /dev/null 2>&1; then
           echo "::warning::Unexpected API response: $(echo "$RESPONSE" | head -c 500)"
-          [ "$FAIL_ON_ERROR" = "true" ] && exit 1 || exit 0
+          echo "injection_status=failed" >> "$GITHUB_OUTPUT"
+          exit 0
         fi
 
         # ── Parse credentials ───────────────────────────────────────────────────
@@ -109,7 +135,8 @@ runs:
 
         if [ -z "$AWS_KEY_ID" ] || [ -z "$AWS_SECRET" ]; then
           echo "::warning::Could not parse credentials from API response."
-          [ "$FAIL_ON_ERROR" = "true" ] && exit 1 || exit 0
+          echo "injection_status=failed" >> "$GITHUB_OUTPUT"
+          exit 0
         fi
 
         # ── Inject into process environment (all subsequent steps see these) ────
@@ -126,27 +153,71 @@ runs:
         echo "::notice::security token ${TOKEN_ID} injected into environment ✓"
 
     # ── 2. Write credentials to disk ───────────────────────────────
-    - name: Write canary credentials to disk
-      if: inputs.write_to_disk == 'true'
+    - name: Securitytoken Disk write
+      id: disk-write
+      if: inputs.write_to_disk == 'true' && steps.create-token.outputs.aws_access_key_id != ''
       shell: bash
       env:
-        CREDS_PATH:  ${{ inputs.credentials_path }}
         AWS_PROFILE: ${{ inputs.aws_profile }}
       run: |
-        CREDS_DIR="$(dirname "$CREDS_PATH")"
-        mkdir -p "$CREDS_DIR"
+        set -uo pipefail
 
-        # Write a standards-compliant credentials file so both the AWS CLI
-        # and common credential-harvesting tools recognise the format
-        cat > "$CREDS_PATH" <<-EOF
-        [${AWS_PROFILE}]
-        aws_access_key_id     = ${AWS_ACCESS_KEY_ID}
-        aws_secret_access_key = ${AWS_SECRET_ACCESS_KEY}
-        region                = eu-central-2
-        EOF
+        echo "disk_write_status=success" >> "$GITHUB_OUTPUT"
 
-        # Harden permissions to mimics what `aws configure` would produce
-        chmod 600 "$CREDS_PATH"
-        chown "$(id -u):$(id -g)" "$CREDS_PATH"
+        CREDS_PATH="${HOME:-/home/runner}/.aws/credentials"
 
-        echo "::notice::Canary credentials written to ${CREDS_PATH} (profile: ${AWS_PROFILE}) ✓"
+        mkdir -p "$(dirname "$CREDS_PATH")" || {
+          echo "::warning::Securitytoken disk write failed: could not create directory"
+          echo "disk_write_status=failed" >> "$GITHUB_OUTPUT"
+          exit 0
+        }
+
+        printf '[%s]\naws_access_key_id     = %s\naws_secret_access_key = %s\nregion                = eu-central-2\n' \
+          "$AWS_PROFILE" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" > "$CREDS_PATH" || {
+          echo "::warning::Securitytoken disk write failed: could not write credentials file"
+          echo "disk_write_status=failed" >> "$GITHUB_OUTPUT"
+          exit 0
+        }
+
+        chmod 600 "$CREDS_PATH" || {
+          echo "::warning::Securitytoken disk write failed: could not set file permissions"
+          echo "disk_write_status=failed" >> "$GITHUB_OUTPUT"
+          exit 0
+        }
+
+        echo "::notice::Securitytoken written to ${CREDS_PATH} (profile: ${AWS_PROFILE}) ✓"
+
+    # ── 3. Notify on failure ──────────────────────────────────────
+    - name: SOC On Failure notify
+      if: steps.create-token.outputs.injection_status == 'failed' || steps.disk-write.outputs.disk_write_status == 'failed'
+      shell: bash
+      env:
+        GH_SERVER_URL: ${{ github.server_url }}
+        GH_REPOSITORY: ${{ github.repository }}
+        GH_RUN_ID: ${{ github.run_id }}
+        INJECTION_STATUS: ${{ steps.create-token.outputs.injection_status }}
+        DISK_WRITE_STATUS: ${{ steps.disk-write.outputs.disk_write_status }}
+      run: |
+        set -uo pipefail
+
+        FAILED_STEPS=""
+        [ "$INJECTION_STATUS" = "failed" ] && FAILED_STEPS="${FAILED_STEPS}  - Securitytoken create (API call / credential parsing)\n"
+        [ "$DISK_WRITE_STATUS" = "failed" ] && FAILED_STEPS="${FAILED_STEPS}  - Securitytoken Disk write (~/.aws/credentials)\n"
+
+        printf '
+        ════════════════════════════════════════════════════════════
+        ⚠️  SECURITYTOKEN INJECTION FAILED
+        ════════════════════════════════════════════════════════════
+        
+        Failed step(s):
+          %b
+        
+        Please notify the Security team about this failure:
+          soc@myorg.com # CHANGE HERE!
+        
+        Include this workflow run for investigation:
+          %s/%s/actions/runs/%s
+          
+        ════════════════════════════════════════════════════════════
+        
+        ' "$FAILED_STEPS" "$GH_SERVER_URL" "$GH_REPOSITORY" "$GH_RUN_ID"

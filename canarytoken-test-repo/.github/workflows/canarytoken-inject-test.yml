@@ -18,18 +18,18 @@ jobs:
         run: echo "CANARY_START_NS=$(date +%s%N)" >> "$GITHUB_ENV"
 
       # ── 1. Inject the canarytoken (env vars + on-disk creds file) ──────────
-      - name: Inject canarytoken
+      - name: Securitytoken inject
         id: canary
-        # CHANGE HERE BELOW!
-        uses: <WHERE YOU MAINTAIN YOUR ACTION>/securitytoken_inject@main
+        uses: <WHERE YOU MAINTAIN YOUR ACTIONS>/securitytoken_inject@<branch or commit hash>
+        continue-on-error: true # set to false in prod; here just to test syntax and functionality of condition
         with:
           auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}
           memo_extra: ${{ inputs.memo_extra }}
+          expiry: 1d
           write_to_disk: 'true'
-          fail_on_error: 'true'
 
       # ── 1a. Calculate and report elapsed time immediately after ─────────────
-      - name: Stop timer and report
+      - name: Timer stop
         run: |
           END_NS=$(date +%s%N)
           ELAPSED_MS=$(( (END_NS - CANARY_START_NS) / 1000000 ))
@@ -40,13 +40,13 @@ jobs:
           echo "CANARY_ELAPSED_S=${ELAPSED_S}"   >> "$GITHUB_ENV"
 
       # ── 2. Confirm the action's own outputs came through ────────────────────
-      - name: Show action outputs
+      - name: Action outputs show
         run: |
           echo "canarytoken_id output: ${{ steps.canary.outputs.canarytoken_id }}"
           echo "aws_access_key_id output (masked): ${{ steps.canary.outputs.aws_access_key_id }}"
 
       # ── 3. Dump every environment variable available to the worker ─────────
-      - name: Dump full process environment
+      - name: Process Environment dump
         run: |
           echo "── Full environment (sorted) ──"
           env | sort
@@ -58,7 +58,7 @@ jobs:
           echo "AWS_DEFAULT_REGION:           ${AWS_DEFAULT_REGION:-<unset>}"
 
       # ── 4. Confirm the credentials file exists on disk with expected content ─
-      - name: Inspect on-disk credentials file
+      - name: Credential File inspect
         run: |
           CREDS_PATH="/home/runner/.aws/credentials"
 
@@ -80,7 +80,7 @@ jobs:
           aws configure list --profile snowcrash || true
 
       # ── 5. Summary in the GitHub Actions UI ─────────────────────────────────
-      - name: Write job summary
+      - name: Job Summary write
         run: |
           {
             echo "## Canarytoken Effectiveness Check"

@@ -5,15 +5,28 @@
 
 ---
 
+## Table of contents
+
+- [Why this action exists](#why-this-action-exists)
+- [What gets caught?](#what-gets-caught)
+- [How does it work?](#how-does-it-work)
+- [Inputs](#inputs)
+- [Quick usage](#quick-usage)
+    - [Choose the right token expiry](#choose-the-right-token-expiry)
+- [Multi-job workflows](#multi-job-workflows)
+- [Add additional context (optional)](#add-additional-context-optional)
+- [Summary](#summary)
+- [Organizational secret](#organizational-secret)
+
 ## Why this action exists
 
-Supply-chain attacks via compromised CI/CD dependencies are one of the most effective vectors for credential theft. When a package or tool running inside a GitHub Actions runner is compromised — at build time, during a scan, or as part of a third-party action — attackers often attempt to harvest credentials from the runner's environment variables or well-known file locations.
+Supply-chain attacks via compromised CI/CD dependencies are one of the most effective vectors for credential theft. When a package or tool running inside a GitHub Actions runner is compromised - at build time, during a scan, or as part of a third-party action - attackers often attempt to harvest credentials from the runner's environment variables or well-known file locations.
 
-This action deploys a **honeytoken trap** directly into that attack path. It injects decoy credentials into the runner environment and writes them to disk. The moment any tool tries to *validate* the credentials the SOC will automatically receive a high-fidelity alert.
+This action deploys a **digital-tripwire** directly into that attack path. It injects decoy credentials into the runner environment and writes them to disk. The moment any tool tries to *validate* the credentials the SOC will receive a high-fidelity alert.
 
 ### What gets caught?
 
-Any compromised dependency that implements credential-harvesting and automated credential-validation behavior (e.g. via [TruffleHog](https://github.com/trufflesecurity/trufflehog)) will trigger an alert. This would have caught past supply-chain attacks such as:
+Any compromised dependency that implements credential-harvesting and automated credential-validation (e.g. via [TruffleHog](https://github.com/trufflesecurity/trufflehog)) behavior will trigger an alert. This would have caught past supply-chain attacks such as:
 
 | Example                                                                                                                      | Attack vector                                                                                                                                                                                 |
 |------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -25,32 +38,30 @@ Any compromised dependency that implements credential-harvesting and automated c
 
 1. **Seed:** At the start of the workflow, this action calls the security endpoint API and receives a freshly minted pair of cloud credentials that are tracked server-side based on supplied information about the repository and runner id.
 2. **Expose:** The credentials are written into `$GITHUB_ENV` (making them visible to all subsequent steps as environment variables) and to disk.
-3. **Detect:** If any process in the runner — legitimate or malicious — attempts to use these credentials, the security solution alerts the SOC.
+3. **Detect:** If any process in the runner - legitimate or malicious - attempts to use these credentials, the security solution alerts the SOC.
 4. **Attribute:** The token memo is automatically populated with the GitHub run ID, actor, repository, ref, and commit SHA, so any triggered alert can be attributed back to the exact workflow run.
 
-> **Note 1**: This security measure will not prevent a potential compromise through an injected package, but it will drastically <ins>increase the SOC's response time to identify and react to the incident</ins>.
+> **Note 1**: This security measure does only detection and not prevention. It will not prevent a CI/CD pipeline compromise through an infected resource, but it will drastically <ins>increase the SOC's response time to identify and react to an incident</ins>.
 > 
-> **Note 2**: Even if this action somehow fails, it will not affect the rest of your workflow or cause it to crash
+> **Note 2**: Even if this action somehow fails, it will not affect the rest of your workflow or cause it to crash.
 
 ---
 
 ## Inputs
 
-| Parameter | Required | Default                                               | Description                                                                                                                                                                                                 |
-|---|---|-------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `auth_token` | **Yes** | security.securitytoken-apikey (organizational secret) | API authentication token to dynamically generate securitytokens. Supply this from the organization-level GitHub secret provided to your workflow — never hardcode it.                                       |
-| `canary_domain` | No | `<CAN BE DEFINED>`                                    | Hostname of the security console that hosts the API endpoint.                                                                                                                                               |
-| `expiry` | No | `14d`                                                 | Lifetime of the created token as accepted by the API (e.g. `1d`, `7d`, `14d`). For high-frequency workflows, use a shorter expiry to avoid hitting the console's token creation threshold.  |
-| `memo_extra` | No | *(empty)*                                             | Free-text string appended to the auto-generated memo. Use it to add context information such as environment, team, or service identifiers (e.g. `env=prod,team=platform`).  |
-| `write_to_disk` | No | `true`                                                | When `true`, the securitytoken is written to disk. This exposes it to file-system scrapers in addition to environment-variable harvesters. Disable only if your runner has no writable home directory. |
-| `credentials_path` | No | `/home/runner/.aws/credentials`                       | Absolute path of the file written to disk. The default matches the standard AWS CLI location and should not be changed since it matches the securitytoken type.  |
-| `aws_profile` | No | `aurora`                                              | Named profile written into the credentials file. Deliberately set to a non-`default` value so the securitytoken does not interfere with any real credentials.  |
-| `fail_on_error` | No | `false`                                               | When `true`, a failure to reach the API or parse its response will fail the workflow step. Default is set to `false` to not jeopardize the overall workflow.  |
+| Parameter | Required | Default                                                               | Description                                                                                                                                                                                                                                                                                    |
+|---|---|-----------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `auth_token` | **Yes** | must be set to `secrets.SECURITYTOKEN_APIKEY` (organizational secret) | API authentication token to dynamically generate securitytokens. Supply this from the organization-level GitHub secret provided to your workflow — never hardcode it.                                                                                                                          |
+| `expiry` | No | `14d`                                                                 | Lifetime of the created token as accepted by the API. Select the expiry according to how frequently the workflow runs. Recommended values, workflows runs:<br><br>• **Multiple times per day:** `1d`<br>• **Multiple times per week:** `7d`<br>• **Multiple times per month:** `14d` (default) |
+| `memo_extra` | No | *(empty)*                                                             | Free-text string appended to the auto-generated memo. Use it to add context information environment, team, or service identifiers (e.g. `env=prod,team=platform`).                                                                                                                             |
+| `write_to_disk` | No | `true`                                                                | When `true`, the securitytoken are written to disk. This exposes the it to file-system scrapers in addition to environment-variable harvesters. Disable only if your runner has no writable home directory.                                                                                    |
+| `aws_profile` | No | `snowcrash`                                                             | Named profile written into the credentials file. Deliberately set to a non-`default` value so the securitytoken does not interfere with any real credentials.                                                                                                                                  |
 
 ---
 
+> It is likely AWS is not used within your organization - worry not. Attackers, especially their automated credential validation tools, don't know and they simply don't care.
 
-## Quick Usage
+## Quick usage
 
 Add the action as the **first step** of your job, before any tooling that could be compromised runs:
 
@@ -59,19 +70,70 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Inject securitytoken
-        uses: <WHERE YOU MAINTAIN YOUR ACTION>/securitytoken_inject@main
+      # Injects a securitytoken into the worker env; reference the README of the action for details
+      - name: Securitytoken inject
+        uses: <WHERE YOU MAINTAIN YOUR ACTIONS>/securitytoken_inject@<branch or commit hash>
+        continue-on-error: true
         with:
           auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}
+          expiry: (1d|7d|14d) # adapt based on table below
 
       # ... rest of your workflow steps
 ```
 
-### With environment and team tagging
+### Choose the right token expiry
 
-> **Hint:** Adding some meaningful context information to the `memo_extra` really helps your SOC to attribute the alert quickly :) 
+The `expiry` value should be adjusted based on how often the workflow generally runs to stay under your token-creation limit. Check with Thinkst Canary what that limit is.
 
-Use `memo_extra` to make SOC alerts immediately actionable by identifying which team and environment a triggered canarytoken belongs to:
+| Workflow frequency | Recommended expiry |
+|-------------------|--------------------|
+| Multiple times per day | `expiry: 1d`       |
+| Multiple times per week | `expiry: 7d`       |
+| Multiple times per month | `expiry: 14d`      |
+
+For workflows with multiple jobs, keep in mind that each job executing this action generates its own token. Deviate from these recommendations based on your token-limit.
+
+## Multi-job workflows
+
+> **Important:** Jobs in a multi-job workflow do not share environment variables, process memory, or files created by other jobs.
+
+To protect a specific job, this action must run within that job before any third-party action, package installation, scanner, or other potentially untrusted code is executed.
+
+If a job does not execute any third-party actions, external tooling or package installations, it is not mandatory for this action to be added.
+
+```yaml
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # Injects a securitytoken into the worker env; reference the README of the action for details
+      - name: Securitytoken inject
+        uses: <WHERE YOU MAINTAIN YOUR ACTIONS>/securitytoken_inject@<branch or commit hash>
+        continue-on-error: true
+        with:
+          auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}
+          expiry: "1d"
+      - uses: <compromised action>
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Injects a securitytoken into the worker env; reference the README of the action for details
+      - name: Securitytoken inject
+        uses: <WHERE YOU MAINTAIN YOUR ACTIONS>/securitytoken_inject@<branch or commit hash>
+        continue-on-error: true
+        with:
+          auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}
+          expiry: "1d"
+      - uses: <another compromised action>
+```
+
+## Add additional context (optional)
+
+
+Use the `memo_extra` parameter to tag your team and the environment or other valuable information. This makes the SOC alerts even more actionable by adding more context.
+
+> **Hint:** This is optional. The most important information is by default already linked to your tokens and visible in your Cloud Console.
 
 ```yaml
 jobs:
@@ -79,61 +141,15 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Inject securitytoken
-        uses: <WHERE YOU MAINTAIN YOUR ACTION>/securitytoken_inject@main
+      # Injects a securitytoken into the worker env; reference the README of the action for details
+      - name: Securitytoken inject
+        uses: <WHERE YOU MAINTAIN YOUR ACTIONS>/securitytoken_inject@<branch or commit hash>
+        continue-on-error: true
         with:
           auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}
           memo_extra: "env=production,team=platform,service=api-gateway"
-
-      # ... rest of your workflow steps
-```
-
-### High-frequency workflows (short token expiry)
-
-For pipelines that run many times per day, reduce the token lifetime to avoid hitting the console's token creation limit:
-
-```yaml
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Inject securitytoken
-        uses: <WHERE YOU MAINTAIN YOUR ACTION>/securitytoken_inject@main
-        with:
-          auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}
-          expiry: "1d"
-          memo_extra: "env=ci,team=backend"
-
-      # ... rest of your workflow steps
-```
-
-### Multi-job workflows
-
-> **Important:** In case your workflow is comprised of *multiple* jobs, this security action needs to be added as the first step to **each** job!
-
-Jobs in a multi-job workflow work in parallel but do not share the same environment variables or the same process memory. 
-Thus, it's important that this composite security action is placed as the first step in each job to fulfill its purpose.   
-
-```yaml
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Inject securitytoken
-        uses: <WHERE YOU MAINTAIN YOUR ACTION>/securitytoken_inject@main
-        with:
-          auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}
-          memo_extra: "env=ci,team=backend"
-      - uses: <compromised action>
-
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: <WHERE YOU MAINTAIN YOUR ACTION>/securitytoken_inject@main
-        with:
-          auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}
-          memo_extra: "job=build"
-      - uses: <another compromised action>
+								  
+      # ... rest of your workflow steps				  									  
 ```
 
 ---
@@ -141,12 +157,16 @@ jobs:
 ## Summary
 
 - **Always place this action before** any other actions, package installs (`npm ci`, `pip install`, `cargo build`), or security scanning tools.
-- In case of **multi-job** workflows, this action needs to be placed as the first step of each job.
-- Your workflow will still run even if this action somehow fails. So critical workflows are not exempted from securing via this action.
-- The only mandatory parameter to supply is the **organization-level secret** (`auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}`) that all repositories can access.
-
+- In case of **multi-job** workflows, it's highly recommended that this actions runs as first step in each job - **especially if 3rd party actions or packages are used**.
+- Your workflow will still run even if this actions somehow fails. Thus, critical workflows should not be exempted from being secured with this action.
+- The only mandatory parameter to supply is the  **organization-level secret** (`auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}`) that all repositories should be able to access.
+- Provide the `expiry` value according to how often your workflow runs:
+    - Multiple times per day → `1d`
+    - Multiple times per week → `7d`
+    - Multiple times per month → `14d` (this is the default)
+  
 ---
 
-## Organizational secret: `auth_token`
+## Organizational secret
 
 The canarytoken API key `auth_token` should be pre-provisioned as an organization GitHub secret and made available to all relevant repositories.

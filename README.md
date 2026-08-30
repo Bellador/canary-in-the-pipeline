@@ -46,7 +46,27 @@ Most valuable is here the `run_url` value. It allows your IR team to step right 
 
 > **Important:** Your IR team must identify the compromised dependenc(y|ies) and rotates all secrets the worker had access to. The alert is only your detection, but not your prevention measure!
 
+## Add it to all your workflows
+
+The technical implementation is simple enough, but how do you get the action added to all workflows in your organization? Convincing your Devs to adopt this action and add it to their workflows can be hard solely under the premise of security.
+Personally, I created a blog post in our internal software-development SharePoint to spread the message. Additionally, I posted it to the "GitHub @ Development" MS Teams channel. The post pretty much resembled the information contained in the README's of this repo - answering the questions of:
+(1) What is the issue? - Supply-chain risk, (2) What do we do about it? - Increase monitoring, (3) How does it work? - Dev's want to understand the technical underpinnings, and lastly (4) How can they help? - Adding this action proactively.
+
+Initially, I used simple searches to identify high-exposure workflows and opened issues with the call to action to add this action. Example queries could be: 
+
+```yaml
+org:example-org path:.github/workflows "curl" "| " extension:yml NOT is:archived
+org:example-org path:.github/workflows "wget" "| " extension:yml NOT is:archived
+org:example-org path:.github/workflows "pip install" extension:yml NOT is:archived
+org:example-org path:.github/workflows "npm install -g" extension:yml NOT is:archived
+```
+
+Lastly, think about automating the previous step. Create automated issues for repositories that match certain exposure-searches and force the Dev's to review it and add the action.
+If the issue is not treated properly or is forgotten, the repo should risk getting archived. 
+
+> Important: Don't forget to implement preventive security measures to protect your CI/CD pipelines next to this action alone, such as sha-pinning of GitHub Actions and [more](https://docs.github.com/en/actions/reference/security/secure-use).
+
 ## Inspiration
 
-[https://tracebit.com/blog/detecting-cicd-supply-chain-attacks-with-canary-credentials](https://tracebit.com/blog/detecting-cicd-supply-chain-attacks-with-canary-credentials)
-[https://grafana.com/blog/canary-tokens-learn-all-about-the-unsung-heroes-of-security-at-grafana-labs/](https://grafana.com/blog/canary-tokens-learn-all-about-the-unsung-heroes-of-security-at-grafana-labs/)
+- [https://tracebit.com/blog/detecting-cicd-supply-chain-attacks-with-canary-credentials](https://tracebit.com/blog/detecting-cicd-supply-chain-attacks-with-canary-credentials)
+- [https://grafana.com/blog/canary-tokens-learn-all-about-the-unsung-heroes-of-security-at-grafana-labs/](https://grafana.com/blog/canary-tokens-learn-all-about-the-unsung-heroes-of-security-at-grafana-labs/)

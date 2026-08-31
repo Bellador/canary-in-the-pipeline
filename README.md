@@ -55,10 +55,10 @@ Personally, I created a blog post in our internal software-development SharePoin
 Initially, I used simple searches to identify high-exposure workflows and opened issues with the call to action to add this action. Example queries could be: 
 
 ```yaml
-org:example-org path:.github/workflows "curl" "| " extension:yml NOT is:archived
-org:example-org path:.github/workflows "wget" "| " extension:yml NOT is:archived
-org:example-org path:.github/workflows "pip install" extension:yml NOT is:archived
-org:example-org path:.github/workflows "npm install -g" extension:yml NOT is:archived
+org:example-org path:.github/workflows (path:*.yml OR path:*.yaml) "curl" "| " NOT is:archived
+org:example-org path:.github/workflows (path:*.yml OR path:*.yaml) "wget" "| " NOT is:archived
+org:example-org path:.github/workflows (path:*.yml OR path:*.yaml) "pip install" NOT is:archived
+org:example-org path:.github/workflows (path:*.yml OR path:*.yaml) "npm install -g" NOT is:archived
 ```
 
 Lastly, think about automating the previous step. Create automated issues for repositories that match certain exposure-searches and force the Dev's to review it and add the action.

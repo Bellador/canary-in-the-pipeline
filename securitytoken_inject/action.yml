@@ -13,7 +13,7 @@ inputs:
     default: '<ENTER CLOUD CONSOLE DOMAIN>' # CHANGE HERE! e.g. d3adb33f.canary.tools
 
   expiry:
-    description: 'Token lifetime accepted by the API. The higher the run cadence of a workflow, the lower should be the expiry to not surpass the creation threshold. Rule of thumb to set the expiry value based on workflow runs; multiple-times per day: 1day; multiple-times per week: 7days; multiple-times per month: 14day (default)'
+    description: 'Token lifetime accepted by the API. The higher the run cadence of a workflow, the lower should be the expiry to not surpass the creation threshold. Rule of thumb to set the expiry value based on workflow runs; multiple-times per day: 1day; multiple-times per week: 7days; multiple-times per month: 14days (default)'
     required: false
     default: '14d'
 
@@ -23,12 +23,12 @@ inputs:
     default: ''
 
   write_to_disk:
-    description: 'Write the securitytoken to an AWS decoy credentials file on disk. Exposes the securitytoken to file-system scrapers in addition to memory carvers'
+    description: 'Write the securitytoken to an AWS decoy credentials file on disk. Exposes the securitytoken to file-system scrapers in addition to env-var harvesters. Set to true for non-persistent, ephemeral runners'
     required: false
-    default: 'true'
+    default: 'false'
 
   aws_profile:
-    description: 'AWS decoy credentials profile name written to the file. Should not be the AWS default to not interfere with any existing AWS creds'
+    description: 'AWS decoy credentials profile name written to the file. Should not be the default to not interfere with any existing AWS creds'
     required: false
     default: 'snowcrash'
 
@@ -80,9 +80,18 @@ runs:
         GH_SERVER_URL: ${{ github.server_url }}
 
       run: |
-        set -uo pipefail
+        set -euo pipefail
 
-        echo "injection_status=success" >> "$GITHUB_OUTPUT"
+        echo "injection_status=failed" >> "$GITHUB_OUTPUT"
+        
+        # ── Dependency check ───────────────────────────────────────────────────
+        for c in curl jq grep awk mkdir chmod; do
+          command -v "$c" >/dev/null 2>&1 || {
+            echo "::error::Securitytoken inject requires '$c', which is not available on this runner/container. Requires bash, curl, jq, grep, awk, mkdir, chmod. See README#requirements."
+            echo "injection_status=failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+        done
 
         # ── Build memo to uniquely attribute token ───────────────────────────
         MEMO="run=${GH_RUN_ID},run_attempt=${GH_RUN_ATTEMPT}"
@@ -127,11 +136,11 @@ runs:
 
         AWS_KEY_ID=$(printf '%s' "$RENDERS" \
           | grep -oE 'aws_access_key_id = .{20}' \
-          | awk '{print $3}')
+          | awk '{print $3}') || true
 
         AWS_SECRET=$(printf '%s' "$RENDERS" \
           | grep -oE 'aws_secret_access_key = .{40}' \
-          | awk '{print $3}')
+          | awk '{print $3}') || true
 
         if [ -z "$AWS_KEY_ID" ] || [ -z "$AWS_SECRET" ]; then
           echo "::warning::Could not parse credentials from API response."
@@ -150,6 +159,7 @@ runs:
         echo "aws_access_key_id=${AWS_KEY_ID}"  >> "$GITHUB_OUTPUT"
         echo "canarytoken_id=${TOKEN_ID}"       >> "$GITHUB_OUTPUT"
 
+        echo "injection_status=success" >> "$GITHUB_OUTPUT"
         echo "::notice::security token ${TOKEN_ID} injected into environment ✓"
 
     # ── 2. Write credentials to disk ───────────────────────────────
@@ -160,9 +170,9 @@ runs:
       env:
         AWS_PROFILE: ${{ inputs.aws_profile }}
       run: |
-        set -uo pipefail
+        set -euo pipefail
 
-        echo "disk_write_status=success" >> "$GITHUB_OUTPUT"
+        echo "disk_write_status=failed" >> "$GITHUB_OUTPUT"
 
         CREDS_PATH="${HOME:-/home/runner}/.aws/credentials"
 
@@ -171,9 +181,15 @@ runs:
           echo "disk_write_status=failed" >> "$GITHUB_OUTPUT"
           exit 0
         }
+        
+        if [ -f "$CREDS_PATH" ] && grep -qxF "[${AWS_PROFILE}]" "$CREDS_PATH"; then
+          echo "::warning::Securitytoken disk write failed: profile [${AWS_PROFILE}] already exists in ${CREDS_PATH}, refusing to modify it"
+          echo "disk_write_status=failed" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
 
-        printf '[%s]\naws_access_key_id     = %s\naws_secret_access_key = %s\nregion                = eu-central-2\n' \
-          "$AWS_PROFILE" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" > "$CREDS_PATH" || {
+        printf '\n[%s]\naws_access_key_id     = %s\naws_secret_access_key = %s\nregion                = eu-central-2\n' \
+          "$AWS_PROFILE" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" >> "$CREDS_PATH" || {
           echo "::warning::Securitytoken disk write failed: could not write credentials file"
           echo "disk_write_status=failed" >> "$GITHUB_OUTPUT"
           exit 0
@@ -184,12 +200,13 @@ runs:
           echo "disk_write_status=failed" >> "$GITHUB_OUTPUT"
           exit 0
         }
-
+        
+        echo "disk_write_status=success" >> "$GITHUB_OUTPUT"
         echo "::notice::Securitytoken written to ${CREDS_PATH} (profile: ${AWS_PROFILE}) ✓"
 
     # ── 3. Notify on failure ──────────────────────────────────────
     - name: SOC On Failure notify
-      if: steps.create-token.outputs.injection_status == 'failed' || steps.disk-write.outputs.disk_write_status == 'failed'
+      if: always() && !cancelled() && (steps.create-token.outputs.injection_status != 'success' || steps.disk-write.outputs.disk_write_status == 'failed')
       shell: bash
       env:
         GH_SERVER_URL: ${{ github.server_url }}
@@ -198,26 +215,38 @@ runs:
         INJECTION_STATUS: ${{ steps.create-token.outputs.injection_status }}
         DISK_WRITE_STATUS: ${{ steps.disk-write.outputs.disk_write_status }}
       run: |
-        set -uo pipefail
+        set -euo pipefail
 
         FAILED_STEPS=""
-        [ "$INJECTION_STATUS" = "failed" ] && FAILED_STEPS="${FAILED_STEPS}  - Securitytoken create (API call / credential parsing)\n"
+        [ "$INJECTION_STATUS" != "success" ] && FAILED_STEPS="${FAILED_STEPS}  - Securitytoken create (API call / credential parsing)\n"
         [ "$DISK_WRITE_STATUS" = "failed" ] && FAILED_STEPS="${FAILED_STEPS}  - Securitytoken Disk write (~/.aws/credentials)\n"
+
+        # Disk write only runs after a successful injection, so exactly one case applies
+        if [ "$INJECTION_STATUS" != "success" ]; then
+          TITLE="SECURITYTOKEN INJECTION FAILED"
+          IMPACT="No decoy token was injected. This job runs WITHOUT decoy coverage."
+        else
+          TITLE="SECURITYTOKEN DISK WRITE FAILED"
+          IMPACT="Env token injected, but the decoy credentials file is missing (file-system scrapers not covered)."
+        fi
 
         printf '
         ════════════════════════════════════════════════════════════
-        ⚠️  SECURITYTOKEN INJECTION FAILED
+        ⚠️  %s
         ════════════════════════════════════════════════════════════
-        
+
+        Impact:
+          %s
+
         Failed step(s):
           %b
-        
+
         Please notify the Security team about this failure:
           soc@myorg.com # CHANGE HERE!
-        
+
         Include this workflow run for investigation:
           %s/%s/actions/runs/%s
-          
+
         ════════════════════════════════════════════════════════════
-        
-        ' "$FAILED_STEPS" "$GH_SERVER_URL" "$GH_REPOSITORY" "$GH_RUN_ID"
+
+        ' "$TITLE" "$IMPACT" "$FAILED_STEPS" "$GH_SERVER_URL" "$GH_REPOSITORY" "$GH_RUN_ID"

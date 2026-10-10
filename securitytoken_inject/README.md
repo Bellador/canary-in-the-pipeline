@@ -16,7 +16,7 @@
 - [Multi-job workflows](#multi-job-workflows)
 - [Add additional context (optional)](#add-additional-context-optional)
 - [Summary](#summary)
-- [Organizational secret](#organizational-secret)
+- [Secret provisioning](#secret-provisioning)
 
 ## Why this action exists
 
@@ -39,9 +39,9 @@ Any compromised dependency that implements credential-harvesting and automated c
 1. **Seed:** At the start of the workflow, this action calls the security endpoint API and receives a freshly minted pair of cloud credentials that are tracked server-side based on supplied information about the repository and runner id.
 2. **Expose:** The credentials are written into `$GITHUB_ENV` (making them visible to all subsequent steps as environment variables) and to disk.
 3. **Detect:** If any process in the runner - legitimate or malicious - attempts to use these credentials, the security solution alerts the SOC.
-4. **Attribute:** The token memo is automatically populated with the GitHub run ID, actor, repository, ref, and commit SHA, so any triggered alert can be attributed back to the exact workflow run.
+4. **Attribute:** The token memo is automatically populated with detailed run context - including the run ID, actor and triggering actor, repository, ref, commit SHA, workflow name/file, job, trigger event, and a direct link to the run. This allows any triggered alert to be attributable.
 
-> **Note 1**: This security measure does only detection and not prevention. It will not prevent a CI/CD pipeline compromise through an infected resource, but it will drastically <ins>increase the SOC's response time to identify and react to an incident</ins>.
+> **Note 1**: This security measure will not prevent a potential repo compromise through an infected resource, but it will drastically <ins>increase the SOC response time to identify and react to an incident</ins>.
 > 
 > **Note 2**: Even if this action somehow fails, it will not affect the rest of your workflow or cause it to crash.
 
@@ -54,7 +54,7 @@ Any compromised dependency that implements credential-harvesting and automated c
 | `auth_token` | **Yes** | must be set to `secrets.SECURITYTOKEN_APIKEY` (organizational secret) | API authentication token to dynamically generate securitytokens. Supply this from the organization-level GitHub secret provided to your workflow — never hardcode it.                                                                                                                          |
 | `expiry` | No | `14d`                                                                 | Lifetime of the created token as accepted by the API. Select the expiry according to how frequently the workflow runs. Recommended values, workflows runs:<br><br>• **Multiple times per day:** `1d`<br>• **Multiple times per week:** `7d`<br>• **Multiple times per month:** `14d` (default) |
 | `memo_extra` | No | *(empty)*                                                             | Free-text string appended to the auto-generated memo. Use it to add context information environment, team, or service identifiers (e.g. `env=prod,team=platform`).                                                                                                                             |
-| `write_to_disk` | No | `true`                                                                | When `true`, the securitytoken are written to disk. This exposes the it to file-system scrapers in addition to environment-variable harvesters. Disable only if your runner has no writable home directory.                                                                                    |
+| `write_to_disk` | No | `false` (set to `true` for non-persistent, ephemeral workers)         | When `true`, the securitytoken is written to disk. This exposes it to file-system scrapers in addition to environment-variable harvesters. Set to `true` for non-persistent, ephemeral runners - which are most.                                                                                    |
 | `aws_profile` | No | `snowcrash`                                                             | Named profile written into the credentials file. Deliberately set to a non-`default` value so the securitytoken does not interfere with any real credentials.                                                                                                                                  |
 
 ---
@@ -76,11 +76,12 @@ jobs:
         continue-on-error: true
         with:
           auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}
+		      write_to_disk: false # only for self-hosted, persistent runners. Set to `true` otherwise																				  
           expiry: (1d|7d|14d) # adapt based on table below
 
       # ... rest of your workflow steps
 ```
-
+> **Dependencies:** This action requires bash, **curl**, **jq**, grep, awk, mkdir and chmod to be available on the runner/container. See README#requirements."																																				   
 ### Choose the right token expiry
 
 The `expiry` value should be adjusted based on how often the workflow generally runs to stay under your token-creation limit. Check with Thinkst Canary what that limit is.
@@ -112,7 +113,7 @@ jobs:
         continue-on-error: true
         with:
           auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}
-          expiry: "1d"
+          expiry: 1d
       - uses: <compromised action>
 
   build:
@@ -124,7 +125,7 @@ jobs:
         continue-on-error: true
         with:
           auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}
-          expiry: "1d"
+          expiry: 1d
       - uses: <another compromised action>
 ```
 
@@ -152,6 +153,10 @@ jobs:
       # ... rest of your workflow steps				  									  
 ```
 
+## Requirements
+
+This action requires **bash**, **curl**, **jq**, **grep**, **awk**, **mkdir** and **chmod** to be installed on the respective runner/container.
+Particularly `curl` and `jq` often need to be supplied in container environments for the action to work!		   
 ---
 
 ## Summary
@@ -160,13 +165,14 @@ jobs:
 - In case of **multi-job** workflows, it's highly recommended that this actions runs as first step in each job - **especially if 3rd party actions or packages are used**.
 - Your workflow will still run even if this actions somehow fails. Thus, critical workflows should not be exempted from being secured with this action.
 - The only mandatory parameter to supply is the  **organization-level secret** (`auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}`) that all repositories should be able to access.
+- Set `write_to_disk` to `true` for ephemeral, non-persistent workers. Disabling the feature is only a security measure for self-hosted, persistent workers.																	   
 - Provide the `expiry` value according to how often your workflow runs:
     - Multiple times per day → `1d`
     - Multiple times per week → `7d`
     - Multiple times per month → `14d` (this is the default)
-  
+- Make sure the needed runtime dependencies are present, mainly `curl` and `jq`.
 ---
 
-## Organizational secret
+## Secret privisioning
 
-The canarytoken API key `auth_token` should be pre-provisioned as an organization GitHub secret and made available to all relevant repositories.
+The canarytoken API key `auth_token` must be pre-provisioned as an organization-level GitHub **Action secret** as well as **Dependabot secret** and made available to all relevant repositories. The latter is needed because there are some workflows that get run by Dependabot (e.g. triggered by a PR) which does not have access to the same organizational GitHub Action secrets. Thus, they need to be privisioned separately.

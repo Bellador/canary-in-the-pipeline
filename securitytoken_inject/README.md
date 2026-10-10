@@ -76,7 +76,7 @@ jobs:
         continue-on-error: true
         with:
           auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}
-		      write_to_disk: false # only for self-hosted, persistent runners. Set to `true` otherwise																				  
+		  write_to_disk: false # only for self-hosted, persistent runners. Set to `true` otherwise																				  
           expiry: (1d|7d|14d) # adapt based on table below
 
       # ... rest of your workflow steps
@@ -149,7 +149,7 @@ jobs:
         with:
           auth_token: ${{ secrets.SECURITYTOKEN_APIKEY }}
           memo_extra: "env=production,team=platform,service=api-gateway"
-								  
+		  
       # ... rest of your workflow steps				  									  
 ```
 

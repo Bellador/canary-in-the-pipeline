@@ -109,7 +109,7 @@ runs:
         echo "::debug::Memo: $MEMO"
 
         # ── Call API ────────────────────────────────────────────────────────────
-        RESPONSE=$(curl -sf \
+        RESPONSE=$(curl -sS \
           --max-time 15 \
           --retry 3 \
           --retry-delay 2 \
@@ -118,7 +118,7 @@ runs:
           -d memo="${MEMO}" \
           -d expiry="${EXPIRY}" \
           -d kind=aws-id) || {
-            echo "::warning::Securitytoken API request failed"
+            echo "::warning::Securitytoken API request failed (curl exit code $?; check https://everything.curl.dev/cmdline/exitcode.html )"
             echo "injection_status=failed" >> "$GITHUB_OUTPUT"
             exit 0
           }
